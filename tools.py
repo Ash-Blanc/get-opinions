@@ -1,22 +1,40 @@
 import os
 import json
+import re
 import time
 import hashlib
 import urllib.request
 import urllib.error
-from typing import Optional
 from dotenv import load_dotenv
 from exa_py import Exa
-from firecrawl import FirecrawlApp
 
 load_dotenv()
 
-exa = Exa(api_key=os.environ["EXA_API_KEY"])
-firecrawl = FirecrawlApp(api_key=os.environ["FIRECRAWL_API_KEY"])
+# Initialize services
+exa = Exa(api_key=os.environ.get("EXA_API_KEY", ""))
 PARALLEL_KEY = os.environ.get("PARALLEL_API_KEY", "")
 MISTRAL_KEY = os.environ.get("MISTRAL_API_KEY", "")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+CEREBRAS_KEY = os.environ.get("CEREBRAS_API_KEY", "")
 EMBEDDINGS_MODEL = os.environ.get("EMBEDDINGS_MODEL", "mistral-embed")
+
+# Embedding cache
+EMBEDDING_CACHE: dict[str, list[float]] = {}
+EMBEDDING_CACHE_HITS = 0
+EMBEDDING_CACHE_MISSES = 0
+
+# High-performance models
+HIGH_PERFORMANCE_MODELS = {
+    "cerebras": {
+        "base_url": "https://api.cerebras.ai/v1",
+        "models": {
+            "text-embedding-3-small": "zai-glm-4.7",  # Fast embeddings
+            "text-embedding-3-large": "zai-glm-4.7",
+            "mistral-embed": "zai-glm-4.7",
+            "openai/text-embedding-3-small": "zai-glm-4.7",
+        },
+    }
+}
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -34,7 +52,151 @@ def generate_id(text: str) -> str:
     return hashlib.md5(text.encode()).hexdigest()[:12]
 
 
-async def get_embedding_mistral(text: str) -> list[float]:
+# ── Content cleaning ──────────────────────────────────────────
+
+_JUNK_PATTERNS = re.compile(
+    r"|".join([
+        r"Section Title:.*",           # Parallel extract navigation headers
+        r"Content:\s*$",               # Empty content markers
+        r"\[Open in app\].*",          # App store links
+        r"Skip to main content.*",     # Skip-nav
+        r"Open menu.*",               # Menu triggers
+        r"Expand user menu.*",
+        r"Go to Reddit Home.*",
+        r"Iniciar sesión.*",           # Non-English UI
+        r"Regístrate.*",
+        r"Registrarse con.*",
+        r"Descargar la app.*",
+        r"No te pierdas lo que.*",
+        r"Ver posts nuevos.*",
+        r"Ir al contenido principal.*",
+        r"Abrir menú.*",
+        r"Abrir navegación.*",
+        r"Las personas en X son.*",
+        r"\| --- \|.*",               # Table separators
+        r"\|\|.*\|.*prev.*next.*",     # HN thread navigation
+        r"reply \|",                  # HN reply markers
+        r"Califique las Notas.*",
+        r"Traducir post",
+        r"Write a response",
+        r"What are your thoughts\?",
+        r"Cancel\s*Respond",
+        r"See all responses",
+        r"Follow Us On Social Media",
+        r"Share\s*$",
+        r"Sitemap\s*$",
+    ]),
+    re.IGNORECASE | re.MULTILINE,
+)
+
+_LINK_RE = re.compile(r"\[([^\]]*)\]\(http[^)]+\)")
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def clean_text(text: str) -> str:
+    """Strip scraping artifacts, nav HTML, and boilerplate from raw content."""
+    # Remove junk lines
+    lines = text.split("\n")
+    cleaned = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if _JUNK_PATTERNS.search(line):
+            continue
+        # Skip lines that are mostly markdown links or bare URLs
+        stripped = _LINK_RE.sub("", line)
+        stripped = _URL_RE.sub("", stripped)
+        if len(stripped.strip()) < 15 and len(line) > 30:
+            continue
+        cleaned.append(line)
+
+    result = "\n".join(cleaned)
+    # Collapse multiple newlines
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+
+
+def _get_embedding_cache_key(text: str) -> str:
+    """Generate a cache key for embedding based on text content."""
+    return generate_id(text)
+
+
+async def get_embedding(text: str) -> list[float]:
+    """Get embedding using the most efficient available method with caching."""
+    global EMBEDDING_CACHE_HITS, EMBEDDING_CACHE_MISSES
+
+    # Check cache first
+    cache_key = _get_embedding_cache_key(text)
+    if cache_key in EMBEDDING_CACHE:
+        EMBEDDING_CACHE_HITS += 1
+        return EMBEDDING_CACHE[cache_key]
+
+    EMBEDDING_CACHE_MISSES += 1
+
+    # Try Cerebras first (fastest)
+    if CEREBRAS_KEY:
+        try:
+            embedding = await _get_embedding_cerebras(text)
+            EMBEDDING_CACHE[cache_key] = embedding
+            return embedding
+        except Exception:
+            pass  # Fall back to other methods
+
+    # Try Mistral (good balance of speed/quality)
+    if MISTRAL_KEY:
+        try:
+            embedding = await _get_embedding_mistral(text)
+            EMBEDDING_CACHE[cache_key] = embedding
+            return embedding
+        except Exception:
+            pass  # Fall back to other methods
+
+    # Try OpenRouter (reliable fallback)
+    if OPENROUTER_KEY:
+        try:
+            embedding = await _get_embedding_openrouter(text)
+            EMBEDDING_CACHE[cache_key] = embedding
+            return embedding
+        except Exception:
+            pass  # Last resort
+
+    raise ValueError("No embedding provider available or all failed")
+
+
+async def _get_embedding_cerebras(text: str) -> list[float]:
+    """Get embedding via Cerebras API (fastest option)."""
+    if not CEREBRAS_KEY:
+        raise ValueError("CEREBRAS_API_KEY not set")
+
+    # Use the most efficient model for embeddings
+    model = HIGH_PERFORMANCE_MODELS["cerebras"]["models"].get(
+        EMBEDDINGS_MODEL, "zai-glm-4.7"
+    )
+
+    req = urllib.request.Request(
+        f"{HIGH_PERFORMANCE_MODELS['cerebras']['base_url']}/embeddings",
+        headers={
+            "Authorization": f"Bearer {CEREBRAS_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/get-opinions",
+            "X-Title": "get-opinions",
+        },
+        data=json.dumps(
+            {
+                "model": model,
+                "input": text[:8000],
+                "stream": False,
+            }
+        ).encode("utf-8"),
+    )
+
+    with urllib.request.urlopen(req, timeout=20) as response:
+        res = json.loads(response.read().decode("utf-8"))
+        return res["data"][0]["embedding"]
+
+
+async def _get_embedding_mistral(text: str) -> list[float]:
     """Get embedding via Mistral API."""
     if not MISTRAL_KEY:
         raise ValueError("MISTRAL_API_KEY not set")
@@ -57,7 +219,7 @@ async def get_embedding_mistral(text: str) -> list[float]:
         return res["data"][0]["embedding"]
 
 
-async def get_embedding_openrouter(text: str) -> list[float]:
+async def _get_embedding_openrouter(text: str) -> list[float]:
     """Get embedding via OpenRouter (uses OpenAI models)."""
     if not OPENROUTER_KEY:
         raise ValueError("OPENROUTER_API_KEY not set")
@@ -77,96 +239,351 @@ async def get_embedding_openrouter(text: str) -> list[float]:
             }
         ).encode("utf-8"),
     )
-    with urllib.request.urlopen(req, timeout=30) as response:
+    with urllib.request.urlopen(req, timeout=25) as response:
         res = json.loads(response.read().decode("utf-8"))
         return res["data"][0]["embedding"]
 
 
-async def get_embedding(text: str) -> list[float]:
-    """Get embedding with Mistral primary, OpenRouter fallback."""
-    try:
-        return await get_embedding_mistral(text)
-    except Exception as e:
-        print(f"  ↳ Mistral embedding failed: {e}")
+async def get_high_performance_llm(
+    prompt: str,
+    model: str = "zai-glm-4.7",
+    max_tokens: int = 4000,
+    reasoning_effort: str = "medium",
+) -> dict:
+    """Get LLM response using the most efficient available method.
+
+    Optimized for speed with fallback options.
+
+    Args:
+        prompt: The user prompt
+        model: Preferred model (may be substituted based on provider)
+        max_tokens: Maximum tokens to generate
+        reasoning_effort: Reasoning effort level (low/medium/high)
+    """
+    errors = []
+
+    # Try Cerebras first (fastest)
+    if CEREBRAS_KEY:
         try:
-            print("  ↳ Falling back to OpenRouter...")
-            return await get_embedding_openrouter(text)
-        except Exception as e2:
-            print(f"  ↳ OpenRouter fallback failed: {e2}")
-            return []
+            return await _call_cerebras_llm(prompt, model, max_tokens, reasoning_effort)
+        except Exception as e:
+            errors.append(f"Cerebras: {e}")
+
+    # Try Parallel (high-accuracy, optimized for AI agents)
+    if PARALLEL_KEY:
+        parallel_models = {
+            "zai-glm-4.7": "speed",  # Fast inference
+            "llama3.1-8b": "speed",
+            "gpt-oss-120b": "quality",  # Deep analysis
+        }
+        p_model = parallel_models.get(model, "speed")
+        try:
+            return await _call_parallel_llm(prompt, p_model, max_tokens)
+        except Exception as e:
+            errors.append(f"Parallel: {e}")
+
+    # Try OpenRouter (reliable fallback)
+    if OPENROUTER_KEY:
+        openrouter_models = {
+            "zai-glm-4.7": "anthropic/claude-3-haiku",
+            "llama3.1-8b": "meta-llama/llama-3.1-8b-instruct",
+            "gpt-oss-120b": "openai/gpt-3-turbo",
+        }
+        or_model = openrouter_models.get(model, "anthropic/claude-3-haiku")
+        try:
+            return await _call_openrouter_llm(prompt, or_model, max_tokens)
+        except Exception as e:
+            errors.append(f"OpenRouter: {e}")
+
+    raise ValueError(f"All LLM providers failed: {'; '.join(errors)}")
+
+
+async def _call_cerebras_llm(
+    prompt: str,
+    model: str = "zai-glm-4.7",
+    max_tokens: int = 4000,
+    reasoning_effort: str = "medium",
+) -> dict:
+    """Call Cerebras LLM API."""
+    if not CEREBRAS_KEY:
+        raise ValueError("CEREBRAS_API_KEY not set")
+
+    req = urllib.request.Request(
+        f"{HIGH_PERFORMANCE_MODELS['cerebras']['base_url']}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {CEREBRAS_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/get-opinions",
+            "X-Title": "get-opinions",
+        },
+        data=json.dumps(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "reasoning_effort": reasoning_effort,
+                "stream": False,
+            }
+        ).encode("utf-8"),
+    )
+
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+async def _call_openrouter_llm(
+    prompt: str, model: str = "zai-glm-4.7", max_tokens: int = 4000
+) -> dict:
+    """Call OpenRouter LLM API."""
+    if not OPENROUTER_KEY:
+        raise ValueError("OPENROUTER_API_KEY not set")
+
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/get-opinions",
+            "X-Title": "get-opinions",
+        },
+        data=json.dumps(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "stream": False,
+            }
+        ).encode("utf-8"),
+    )
+
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+async def _call_parallel_llm(
+    prompt: str, model: str = "speed", max_tokens: int = 4000
+) -> dict:
+    """Call Parallel LLM API."""
+    if not PARALLEL_KEY:
+        raise ValueError("PARALLEL_API_KEY not set")
+
+    req = urllib.request.Request(
+        "https://api.parallel.ai/chat/completions",
+        headers={
+            "Authorization": f"Bearer {PARALLEL_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/get-opinions",
+            "X-Title": "get-opinions",
+        },
+        data=json.dumps(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "stream": False,
+            }
+        ).encode("utf-8"),
+    )
+
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+async def parallel_search(
+    queries: list[str],
+    objective: str = "",
+    max_results: int = 10,
+    max_chars_per_result: int = 5000,
+) -> list[dict]:
+    """Search the web using Parallel.ai Search API.
+
+    Returns LLM-optimized excerpts ranked by reasoning utility.
+    Much higher quality than traditional search for opinion discovery.
+
+    Args:
+        queries: Search queries to execute
+        objective: Natural language context for what we're looking for
+        max_results: Maximum number of results to return
+        max_chars_per_result: Maximum chars per excerpt
+
+    Returns:
+        List of {url, title, publish_date, excerpts[]}
+    """
+    if not PARALLEL_KEY:
+        return []
+
+    body = {
+        "search_queries": queries[:5],  # API limit
+        "max_results": max_results,
+        "excerpts": {"max_chars_per_result": max_chars_per_result},
+    }
+    if objective:
+        body["objective"] = objective
+
+    req = urllib.request.Request(
+        "https://api.parallel.ai/v1beta/search",
+        headers={
+            "x-api-key": PARALLEL_KEY,
+            "Content-Type": "application/json",
+            "parallel-beta": "search-extract-2025-10-10",
+        },
+        data=json.dumps(body).encode("utf-8"),
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            res = json.loads(response.read().decode("utf-8"))
+            return res.get("results", [])
+    except Exception as e:
+        print(f"  ↳ Parallel search failed: {e}")
+        return []
+
+
+async def parallel_extract(
+    urls: list[str],
+    objective: str = "",
+    max_chars_per_result: int = 5000,
+) -> list[dict]:
+    """Extract content from URLs using Parallel.ai Extract API.
+
+    Pulls focused, objective-aligned excerpts from specific pages.
+
+    Args:
+        urls: URLs to extract content from
+        objective: What to focus on when extracting
+        max_chars_per_result: Max chars per extracted result
+
+    Returns:
+        List of {url, title, excerpts[]}
+    """
+    if not PARALLEL_KEY:
+        return []
+
+    body = {
+        "urls": urls[:10],  # Reasonable batch limit
+        "excerpts": True,
+    }
+    if objective:
+        body["objective"] = objective
+
+    req = urllib.request.Request(
+        "https://api.parallel.ai/v1beta/extract",
+        headers={
+            "x-api-key": PARALLEL_KEY,
+            "Content-Type": "application/json",
+            "parallel-beta": "search-extract-2025-10-10",
+        },
+        data=json.dumps(body).encode("utf-8"),
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            res = json.loads(response.read().decode("utf-8"))
+            return res.get("results", [])
+    except Exception as e:
+        print(f"  ↳ Parallel extract failed: {e}")
+        return []
 
 
 async def get_embeddings_batch(texts: list[str]) -> list[list[float]]:
-    """Get embeddings for multiple texts with fallback."""
+    """Get embeddings for multiple texts using the cached provider chain."""
     if not texts:
         return []
-
-    embeddings = []
-    for text in texts:
-        emb = await get_embedding(text)
-        embeddings.append(emb)
-    return embeddings
+    return [await get_embedding(text) for text in texts]
 
 
-async def call_llm(prompt: str, system: str = "") -> str:
-    """Call LLM via OpenRouter for synthesis."""
-    if not OPENROUTER_KEY and not PARALLEL_KEY:
-        raise ValueError("No LLM API key configured")
+async def discover_personas_for_topic(topic: str) -> list[dict]:
+    """Use Parallel Search to discover real voices relevant to the topic.
 
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
+    Returns list of {name, search_queries} for dynamically discovered personas.
+    """
+    if not PARALLEL_KEY:
+        return []
 
-    if OPENROUTER_KEY:
-        req = urllib.request.Request(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/get-opinions",
-                "X-Title": "get-opinions",
-            },
-            data=json.dumps(
-                {
-                    "model": "anthropic/claude-3-haiku",
-                    "messages": messages,
-                    "stream": False,
-                }
-            ).encode("utf-8"),
-        )
-        with urllib.request.urlopen(req, timeout=60) as response:
-            res = json.loads(response.read().decode("utf-8"))
-            return res["choices"][0]["message"]["content"]
+    print(f"  🔍 Discovering relevant voices via Parallel Search...")
 
-    if PARALLEL_KEY:
-        req = urllib.request.Request(
-            "https://api.parallel.ai/chat/completions",
-            headers={
-                "Authorization": f"Bearer {PARALLEL_KEY}",
-                "Content-Type": "application/json",
-            },
-            data=json.dumps(
-                {
-                    "model": "base",
-                    "messages": messages,
-                    "stream": False,
-                }
-            ).encode("utf-8"),
-        )
-        with urllib.request.urlopen(req, timeout=60) as response:
-            res = json.loads(response.read().decode("utf-8"))
-            return res["choices"][0]["message"]["content"]
+    # Search for people with direct experience on this topic
+    discovery_results = await parallel_search(
+        queries=[
+            f"{topic} tips advice from experienced people",
+            f"{topic} first-person account success story",
+            f"{topic} expert discussion forum",
+        ],
+        objective=f"Find specific people who have direct experience with: {topic}. "
+                  f"Look for first-person accounts, advice posts, and discussions "
+                  f"from people who have actually done this — not just commentators.",
+        max_results=10,
+        max_chars_per_result=3000,
+    )
 
-    raise ValueError("No LLM API available")
+    if not discovery_results:
+        return []
+
+    # Use LLM to extract persona names and generate targeted queries
+    excerpts_for_llm = []
+    for r in discovery_results[:8]:
+        title = r.get("title", "")
+        url = r.get("url", "")
+        excs = r.get("excerpts", [])
+        preview = clean_text("\n".join(excs))[:400] if excs else ""
+        excerpts_for_llm.append(f"Title: {title}\nURL: {url}\nExcerpt: {preview}")
+
+    extract_prompt = f"""From these search results about "{topic}", identify 2-4 specific people or communities who have DIRECT experience with this topic.
+
+SEARCH RESULTS:
+{chr(10).join(excerpts_for_llm)}
+
+For each persona, return JSON:
+[
+  {{"name": "Person Name or Community", "search_queries": ["query1 about their experience", "query2 targeting their advice"]}}
+]
+
+RULES:
+- Pick people who have DONE the thing, not just commented on it
+- Include their real name or handle if visible
+- Make search queries specific to finding THEIR opinions and advice
+- If a Reddit/HN thread is rich with opinions, include that community as a persona
+- Prefer people with first-person experience over famous commentators
+- Return valid JSON array only, no explanation"""
+
+    try:
+        result = await get_high_performance_llm(extract_prompt, max_tokens=1000)
+        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        # Parse JSON from response
+        # Handle markdown code blocks
+        if "```" in content:
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+
+        personas = json.loads(content.strip())
+        if isinstance(personas, list) and personas:
+            for p in personas:
+                print(f"    Found: {p.get('name', '?')}")
+            return personas
+    except Exception as e:
+        print(f"    ↳ Persona extraction failed: {e}")
+
+    return []
 
 
 async def select_personas_for_topic(topic: str) -> list[str]:
-    """Use agent to select the most relevant personas for a topic."""
+    """Discover relevant personas for a topic using web search.
+
+    First tries dynamic discovery via Parallel Search to find actual
+    relevant voices. Falls back to the hardcoded agent selector.
+    """
+    # Try dynamic discovery first
+    discovered = await discover_personas_for_topic(topic)
+    if discovered:
+        # Store the discovery results for _build_default_index to use
+        select_personas_for_topic._last_discovery = discovered
+        return [p["name"] for p in discovered]
+
+    # Fallback to agent-based selection from hardcoded list
     from agents import create_persona_selector_agent
-
     agent = create_persona_selector_agent()
-
     try:
         result = await agent.call(
             list[str],
@@ -175,17 +592,21 @@ async def select_personas_for_topic(topic: str) -> list[str]:
         return result
     except Exception as e:
         print(f"  ↳ Persona selection failed: {e}, using defaults")
-        return ["karpathy", "hn"]
+        return ["hn", "reddit_tech"]
+
+# Store class-level attribute for passing discovery data
+select_personas_for_topic._last_discovery = None
 
 
 async def synthesize_with_agent(topic: str, opinions: list[dict]) -> str:
     """Use agentica agent to synthesize retrieved opinions."""
     from agents import create_synthesis_agent
 
+    # Clean opinion text before sending to agent
     opinions_text = "\n\n".join(
         [
-            f"[{o['persona_name']}] (relevance: {o['similarity']})\n{o['opinion']}"
-            for o in opinions[:15]
+            f"[Source: {o['persona_name']}, {o['source_platform']}]\n{clean_text(o['opinion'])[:500]}"
+            for o in opinions[:12]
         ]
     )
 
@@ -267,7 +688,7 @@ async def build_persona_index(
 ) -> "PersonaIndex":
     """
     Build an opinion index for a persona by scraping real discussions.
-    Uses Exa to find relevant content and Firecrawl to extract opinions.
+    Uses Parallel.ai Search (primary) and Exa (fallback) for discovery.
     Agentica agents can be used for higher quality opinion extraction.
     """
     from personas import PersonaIndex, Opinion, save_persona_index
@@ -290,46 +711,90 @@ async def build_persona_index(
 
     all_opinions = []
 
-    for i, query in enumerate(search_queries, 1):
-        print(f"  [{i}/{len(search_queries)}] Searching: {query}")
+    # === PRIMARY: Parallel.ai Search (LLM-optimized, single-hop) ===
+    if PARALLEL_KEY:
+        objective = f"Find real opinions, discussions, and perspectives about {persona_name}. Focus on forums, social media posts, blog comments, and community discussions where people express genuine views."
+        print(f"  ⚡ Using Parallel.ai Search (primary)")
+        parallel_results = await parallel_search(
+            queries=search_queries,
+            objective=objective,
+            max_results=15,
+            max_chars_per_result=5000,
+        )
 
-        try:
-            results = exa.search_and_contents(
-                query=query,
-                num_results=15,
-                type="neural",
-                text={"max_characters": 3000},
-            )
-
-            for r in results.results:
-                text = r.text or ""
+        if parallel_results:
+            print(f"    Found {len(parallel_results)} results via Parallel")
+            for r in parallel_results:
+                url = r.get("url", "")
+                excerpts = r.get("excerpts", [])
+                text = "\n\n".join(excerpts) if excerpts else ""
                 if len(text) < 100:
                     continue
 
                 platform = "web"
-                if "twitter.com" in r.url or "x.com" in r.url:
+                if "twitter.com" in url or "x.com" in url:
                     platform = "twitter"
-                elif "reddit.com" in r.url:
+                elif "reddit.com" in url:
                     platform = "reddit"
-                elif "news.ycombinator.com" in r.url:
+                elif "news.ycombinator.com" in url:
                     platform = "hn"
 
                 if use_agent:
-                    chunks = await extract_opinions_with_agent(text, r.url, platform)
+                    chunks = await extract_opinions_with_agent(text, url, platform)
                 else:
                     chunks = extract_opinions(
                         text,
-                        r.url,
+                        url,
                         platform,
                         persona_name if persona_type == "individual" else "",
                     )
                 all_opinions.extend(chunks)
+        else:
+            print(f"    ↳ Parallel search returned no results, falling back to Exa")
 
-        except Exception as e:
-            print(f"    ✗ Error: {e}")
-            continue
+    # === FALLBACK: Exa search (if Parallel unavailable or returned nothing) ===
+    if not all_opinions:
+        print(f"  🔍 Using Exa Search {'(fallback)' if PARALLEL_KEY else '(primary)'}")
+        for i, query in enumerate(search_queries, 1):
+            print(f"  [{i}/{len(search_queries)}] Searching: {query}")
 
-        time.sleep(0.5)
+            try:
+                results = exa.search_and_contents(
+                    query=query,
+                    num_results=15,
+                    type="neural",
+                    text={"max_characters": 3000},
+                )
+
+                for r in results.results:
+                    text = r.text or ""
+                    if len(text) < 100:
+                        continue
+
+                    platform = "web"
+                    if "twitter.com" in r.url or "x.com" in r.url:
+                        platform = "twitter"
+                    elif "reddit.com" in r.url:
+                        platform = "reddit"
+                    elif "news.ycombinator.com" in r.url:
+                        platform = "hn"
+
+                    if use_agent:
+                        chunks = await extract_opinions_with_agent(text, r.url, platform)
+                    else:
+                        chunks = extract_opinions(
+                            text,
+                            r.url,
+                            platform,
+                            persona_name if persona_type == "individual" else "",
+                        )
+                    all_opinions.extend(chunks)
+
+            except Exception as e:
+                print(f"    ✗ Error: {e}")
+                continue
+
+            time.sleep(0.5)
 
     print(f"\n  Found {len(all_opinions)} raw opinions")
 
@@ -360,27 +825,45 @@ async def build_persona_index(
 def extract_opinions(
     text: str, url: str, platform: str, author_hint: str = ""
 ) -> list["Opinion"]:
-    """Extract individual opinions from scraped text."""
+    """Extract individual opinions from scraped text with aggressive junk filtering."""
     from personas import Opinion
 
+    text = clean_text(text)
     opinions = []
-
     paragraphs = text.split("\n\n")
+
+    SKIP_PHRASES = [
+        "subscribe", "newsletter", "advertisement", "sponsored",
+        "sign in", "sign up", "log in", "create account",
+        "cookie", "privacy policy", "terms of service",
+        "open in app", "download the app", "member-only",
+        "read more", "view specs", "promoted",
+        "press enter or click", "latest mobiles",
+    ]
 
     for para in paragraphs:
         para = para.strip()
-        if len(para) < 50 or len(para) > 2000:
+
+        # Must have enough real words (not just links/formatting)
+        words = re.findall(r"[a-zA-Z]{3,}", para)
+        if len(words) < 10 or len(para) > 2000:
             continue
 
+        lower = para.lower()
+
+        # Skip boilerplate
+        if any(skip in lower for skip in SKIP_PHRASES):
+            continue
+
+        # Skip if mostly link/URL content
+        url_chars = sum(len(m) for m in _URL_RE.findall(para))
+        if url_chars > len(para) * 0.3:
+            continue
+
+        # Skip Twitter UI noise
         if platform == "twitter":
             if para.startswith("@") or para.startswith("Replying to"):
                 continue
-
-        if any(
-            skip in para.lower()
-            for skip in ["subscribe", "newsletter", "advertisement", "sponsored"]
-        ):
-            continue
 
         opinion = Opinion(
             id=generate_id(para),
@@ -446,7 +929,7 @@ async def generate_response_from_opinions(
     opinions: list[dict],
     use_agent: bool = True,
 ) -> str:
-    """Generate pros/cons/feedback response grounded in retrieved opinions."""
+    """Generate a clear, structured verdict grounded in retrieved opinions."""
 
     if use_agent:
         try:
@@ -454,35 +937,71 @@ async def generate_response_from_opinions(
         except Exception as e:
             print(f"  ↳ Agent synthesis failed: {e}, using fallback")
 
-    opinions_text = "\n\n".join(
-        [
-            f"[{o['persona_name']}] (relevance: {o['similarity']})\n{o['opinion']}"
-            for o in opinions[:15]
-        ]
-    )
+    # Clean opinions before synthesis
+    cleaned_opinions = []
+    for o in opinions[:12]:
+        text = clean_text(o["opinion"])[:500]
+        if len(text) > 50:
+            cleaned_opinions.append(
+                f"[{o['persona_name']}, {o['source_platform']}]: {text}"
+            )
 
-    prompt = f"""Based on these real opinions found in discussions, provide a structured analysis.
+    if not cleaned_opinions:
+        return "No meaningful opinions could be extracted for this topic."
+
+    opinions_text = "\n\n".join(cleaned_opinions)
+
+    prompt = f"""Analyze these real opinions and give a clear, structured verdict.
 
 TOPIC: {topic}
 
-RETRIEVED OPINIONS:
+OPINIONS FROM THE WEB:
 {opinions_text}
 
-Generate a response with these sections:
-1. PROS - positive points people actually mentioned
-2. CONS - concerns/criticisms people actually mentioned  
-3. CONSTRUCTIVE FEEDBACK - actionable advice based on the discourse
+Write your analysis in this EXACT format:
 
-Use ONLY points grounded in the retrieved opinions. Quote directly when impactful.
-Format as markdown."""
+## TL;DR
+[2-3 sentence verdict. What's the consensus? Is the idea good, bad, or mixed? Be direct.]
+
+## What People Like
+- [Specific positive point, with a short quote if available]
+- [Another pro grounded in the opinions]
+
+## Concerns Raised
+- [Specific criticism or worry, with a short quote if available]
+- [Another con]
+
+## Key Tensions
+[1-2 sentences on where opinions diverge the most]
+
+## Bottom Line
+[1-2 sentence actionable takeaway. What should someone do with this information?]
+
+RULES:
+- Every point MUST be grounded in the provided opinions — do not invent
+- Be concise and direct, not academic
+- Use short inline quotes ("like this") to show real voices
+- If opinions don't cover a section, say so honestly
+- Write for someone who wants a quick, useful answer"""
 
     try:
-        return await call_llm(
-            prompt,
-            system="You synthesize real opinions into structured analysis. Ground every point in the provided quotes.",
+        result = await get_high_performance_llm(
+            prompt, max_tokens=3000, reasoning_effort="high"
         )
+        return result.get("choices", [{}])[0].get("message", {}).get("content", "")
     except Exception as e:
-        return f"Error generating response: {e}\n\nRaw opinions:\n{opinions_text}"
+        # Structured fallback — don't dump raw text
+        print(f"  ↳ LLM synthesis failed: {e}, generating minimal summary")
+        summary_lines = [
+            f"## Summary (auto-generated, LLM unavailable)\n",
+            f"**Topic:** {topic}\n",
+            f"**{len(cleaned_opinions)} opinions retrieved.** Key points:\n",
+        ]
+        for i, co in enumerate(cleaned_opinions[:5], 1):
+            text = co.split("]: ", 1)[-1] if "]: " in co else co
+            summary_lines.append(f"{i}. {text[:200]}{'...' if len(text) > 200 else ''}\n")
+        summary_lines.append(f"\n*Full synthesis unavailable due to: {e}*")
+        return "\n".join(summary_lines)
 
 
 def save_to_file(filename: str, content: str) -> str:

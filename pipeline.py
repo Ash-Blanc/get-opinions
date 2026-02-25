@@ -32,33 +32,62 @@ class OpinionPipeline:
         pass
 
     def _format_report(self, topic: str, results: dict, opinions: list[dict]) -> str:
-        """Format results into markdown report."""
+        """Format results into clean markdown report."""
+        from tools import clean_text
+
         lines = [
-            f"# OPINIONS: {topic[:60]}{'...' if len(topic) > 60 else ''}",
-            f"_{datetime.now().strftime('%Y-%m-%d %H:%M')} · {results['personas_queried']} indices · {len(opinions)} opinions retrieved_",
-            "",
-            "## Retrieved Opinions",
+            f"# OPINIONS: {topic}",
+            f"_{datetime.now().strftime('%Y-%m-%d %H:%M')} · {results['personas_queried']} indices · {len(opinions)} opinions_",
             "",
         ]
 
+        # Synthesis is the main event
+        lines.append("---")
+        lines.append("")
+        synthesis = results.get("synthesis", "Unable to generate synthesis.")
+        lines.append(synthesis)
+        lines.append("")
+
+        # Compact opinion evidence section
+        lines.append("---")
+        lines.append("")
+        lines.append("## Key Opinions Retrieved")
+        lines.append("")
+
+        sources = []
         current_persona = None
         for o in opinions:
             if o["persona_name"] != current_persona:
                 current_persona = o["persona_name"]
-                lines.append(f"### {current_persona} ({o['persona_type']})")
+                lines.append(f"### {current_persona}")
                 lines.append("")
 
-            lines.append(
-                f"> {o['opinion'][:300]}{'...' if len(o['opinion']) > 300 else ''}"
-            )
-            lines.append(f"> _— {o['source_platform']}, relevance: {o['similarity']}_")
+            # Clean and truncate the opinion text
+            text = clean_text(o["opinion"])
+            text = text.replace("\n", " ").strip()
+            if len(text) > 250:
+                text = text[:247] + "..."
+
+            platform = o.get("source_platform", "web")
+            sim = round(o.get("similarity", 0), 2)
+            lines.append(f"> {text}")
+            lines.append(f"> — *{platform}, relevance: {sim}*")
             lines.append("")
 
-        lines.append("---")
-        lines.append("")
-        lines.append("## Synthesis")
-        lines.append("")
-        lines.append(results.get("synthesis", "Unable to generate synthesis."))
+            # Collect sources for footer
+            url = o.get("source_url", "")
+            if url and url not in [s[1] for s in sources]:
+                sources.append((current_persona, url))
+
+        # Sources footer
+        if sources:
+            lines.append("---")
+            lines.append("")
+            lines.append("## Sources")
+            lines.append("")
+            for persona, url in sources[:15]:
+                lines.append(f"- [{persona}]({url})")
+            lines.append("")
 
         return "\n".join(lines)
 
@@ -163,24 +192,33 @@ class OpinionPipeline:
     async def _build_default_index(
         self, identifier: str, use_agent: bool = True
     ) -> PersonaIndex | None:
-        """Build a default index for a persona using reasonable search queries."""
-        import requests
-
+        """Build a default index for a persona using discovered or default queries."""
         pid = normalize_id(identifier)
 
-        default_queries = [
-            f'"{identifier}" opinion',
-            f'"{identifier}" thoughts on',
-            f'"{identifier}" said about',
-            f'"{identifier}" discussion',
-        ]
+        # Check if dynamic discovery provided targeted queries for this persona
+        search_queries = None
+        discovery = select_personas_for_topic._last_discovery
+        if discovery:
+            for p in discovery:
+                if p.get("name", "").lower() == identifier.lower():
+                    search_queries = p.get("search_queries", [])
+                    break
+
+        # Fall back to generic queries if no discovery data
+        if not search_queries:
+            search_queries = [
+                f'"{identifier}" advice tips',
+                f'"{identifier}" opinion perspective',
+                f'"{identifier}" discussion insights',
+                f'{identifier} thoughts experience',
+            ]
 
         try:
             index = await build_persona_index(
                 persona_id=pid,
                 persona_name=identifier,
                 persona_type="individual",
-                search_queries=default_queries,
+                search_queries=search_queries,
                 max_opinions=100,
                 use_embeddings=True,
                 use_agent=use_agent,

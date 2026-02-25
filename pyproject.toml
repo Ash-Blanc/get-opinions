@@ -7,9 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "cli2>=5.2",
     "exa-py>=2.4.0",
-    "firecrawl-py>=4.16.0",
     "python-dotenv>=1.2.1",
-    "requests>=2.32.5",
     "symbolica-agentica>=0.4.1",
 ]
 

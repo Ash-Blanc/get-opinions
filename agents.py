@@ -2,7 +2,21 @@ from agentica import Agent
 from agentica.logging import set_default_agent_listener
 from agentica.logging.agent_listener import FileOnlyListener
 
+from typing import Literal
+
+# Set up Cerebras API for high-performance inference
 set_default_agent_listener(FileOnlyListener)
+
+# Cerebras-backed models via OpenRouter (ultra-fast inference)
+# These are OpenRouter model slugs served by Cerebras hardware
+CEREBRAS_MODELS = {
+    "synthesis": "openai/gpt-oss-120b",           # 120B MoE, strong reasoning
+    "research": "meta-llama/llama-3.1-8b-instruct", # 8B, fast text processing
+    "curation": "openai/gpt-oss-120b",             # 120B MoE, strong reasoning
+    "persona_selector": "meta-llama/llama-3.1-8b-instruct",  # 8B, fast selection
+    "persona_simulation": "openai/gpt-oss-120b",   # 120B MoE, persona quality
+    "default": "openai/gpt-oss-120b",              # Fallback
+}
 
 
 def create_persona_selector_agent() -> Agent:
@@ -39,7 +53,9 @@ Selection rules:
 5. Prefer personas with known public positions on similar topics
 
 Output JSON array of persona IDs: ["karpathy", "hn", ...]""",
-        model="x-ai/grok-4.1-fast",
+        model=CEREBRAS_MODELS["persona_selector"],
+        max_tokens=1000,  # Faster responses with token limit
+        reasoning_effort="low",  # Minimal reasoning for selection
     )
 
 
@@ -63,40 +79,49 @@ Output structured data with each opinion containing:
 - The exact quote (verbatim)
 - Brief context
 - Inferred topic tags""",
-        model="x-ai/grok-4.1-fast",
+        model=CEREBRAS_MODELS["research"],
+        max_tokens=2000,  # More tokens for content extraction
+        reasoning_effort="medium",  # Better quality for extraction
     )
 
 
 def create_synthesis_agent() -> Agent:
     """Agent for synthesizing retrieved opinions into structured analysis."""
     return Agent(
-        premise="""You synthesize real opinions into structured analysis.
+        premise="""You synthesize real opinions into a clear, direct verdict.
 
-CORE PRINCIPLE: Ground every point in the provided quotes. Your analysis should
-reflect what people actually said, not what you think they might have meant.
+You receive opinions found on forums, social media, and blogs. Your job is to
+distill them into a useful, honest analysis — not academic fluff.
 
-Output format:
+STRICT OUTPUT FORMAT:
 
-## Pros
-- [Specific positive point with supporting quote reference]
+## TL;DR
+[2-3 sentence verdict. What's the consensus? Is the idea good, bad, or mixed? Be blunt.]
+
+## What People Like
+- [Specific positive point with a short inline quote]
 - [Another pro with evidence]
 
-## Cons
-- [Specific concern raised]
-- [Another con with quote backing]
-
-## Constructive Feedback
-[Actionable synthesis that combines insights from multiple perspectives]
+## Concerns Raised
+- [Specific criticism with a short inline quote]
+- [Another con with evidence]
 
 ## Key Tensions
-[Where opinions conflict or diverge meaningfully]
+[1-2 sentences on where opinions conflict most]
 
-Rules:
-- Quote directly when impactful
-- Never invent points not supported by the provided opinions
-- Acknowledge when opinions are mixed or contradictory
-- Note the source platform when relevant (HN tends technical, Twitter more casual)""",
-        model="x-ai/grok-4.1-fast",
+## Bottom Line
+[1-2 sentence actionable takeaway. What should someone actually do?]
+
+RULES:
+- Ground every point in the provided opinions — never invent
+- Use short inline quotes ("like this") to show real voices
+- Be concise and direct — no filler, no hedging
+- If opinions are one-sided, say so
+- If there aren't enough opinions for a section, skip it
+- Write like you're giving advice to a smart friend, not writing a paper""",
+        model=CEREBRAS_MODELS["synthesis"],
+        max_tokens=3000,
+        reasoning_effort="high",
     )
 
 
@@ -126,7 +151,9 @@ When analyzing topics:
 Stay authentic to the persona's voice, vocabulary patterns, and typical concerns.
 If a topic is outside the persona's domain, acknowledge that but offer perspective
 based on their general philosophy or related areas of expertise.""",
-        model="x-ai/grok-4.1-fast",
+        model=CEREBRAS_MODELS["persona_simulation"],
+        max_tokens=2500,  # More tokens for persona simulation
+        reasoning_effort="medium",  # Better quality for persona responses
     )
 
 
@@ -177,5 +204,7 @@ HARD RULES:
 - NEVER clean up informal language in quotes
 - NEVER invent themes unsupported by actual quotes
 - If you have 5 good opinions, write a short honest report. Don't pad.""",
-        model="x-ai/grok-4.1-fast",
+        model=CEREBRAS_MODELS["curation"],
+        max_tokens=4000,  # More tokens for curation
+        reasoning_effort="high",  # Best quality for curation
     )

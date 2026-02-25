@@ -160,37 +160,45 @@ Data stored locally in:
 ## Output Example
 
 ```markdown
-# OPINIONS: Should I bootstrap or raise VC?
-_2025-02-25 14:30 · 3 perspectives · 12 opinions retrieved_
-
-## Retrieved Opinions
-
-### Naval Ravikant (individual)
-> "Bootstrapping forces you to focus on revenue from day one..."
-> _— twitter, relevance: 0.87_
-
-### Indie Hackers (group)
-> "The freedom of not having a board to answer to is underrated..."
-> _— reddit, relevance: 0.82_
+# OPINIONS: how to win any big competitive hackathon in ai age
+_2026-02-25 20:03 · 2 indices · 15 opinions_
 
 ---
 
-## Synthesis
+## TL;DR
+The consensus is that winning AI hackathons requires a strategic approach that goes beyond just adding AI. Key elements include solving a problem everyone understands, embracing outside perspectives for feedback, and being "AI-fluent" across the entire development stack.
 
-### Pros of Bootstrapping
-- Full ownership and control
-- Revenue focus from day one
-- Freedom from board pressure
+## What People Like
+- **Solving Real Pain First:** The most important factor is choosing a problem that resonates universally and addresses a genuine need.
+- **AI Fluency:** Winning teams understand how to collaborate effectively with AI, focusing on mastering techniques that work across various AI systems.
 
-### Pros of VC
-- Faster growth potential
-- Access to network/resources
-- Can tackle larger markets
+## Concerns Raised
+- **Over-reliance on AI Output:** A critical truth is that AI can generate syntactically perfect code that contains logical errors. Human verification is "non-negotiable".
+- **"Just Add AI" is Not a Strategy:** Teams that focus on technology alone, without a strong underlying strategy for problem-solving, are less likely to win.
 
-### Constructive Feedback
-Consider your market size and personal runway. If you're in a winner-take-all 
-market, VC might be necessary. If you can reach profitability quickly with 
-a niche product, bootstrap.
+## Key Tensions
+Opinions diverge on the balance between technical implementation and the clarity of the idea and its presentation. Some emphasize functional demos, while others stress a compelling pitch.
+
+## Bottom Line
+To win an AI hackathon, focus on solving a relatable problem with a clear strategy, leverage AI tools for speed, but always budget time for human verification and compelling presentation.
+
+---
+
+## Key Opinions Retrieved
+
+### karpathy
+> Technology is just the enabler — strategy is everything else.
+> — *twitter, relevance: 0.82*
+
+### hn
+> The freedom of not having a board to answer to is underrated...
+> — *hn, relevance: 0.79*
+
+---
+
+## Sources
+- [karpathy](https://twitter.com/karpathy/status/123456789)
+- [hn](https://news.ycombinator.com/item?id=123456)
 ```
 
 ## Environment Variables
