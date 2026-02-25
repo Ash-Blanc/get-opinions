@@ -88,7 +88,7 @@ def run(
     persona_identifiers = [p.strip() for p in personas.split(",") if p.strip()]
 
     if not persona_identifiers:
-        cli2.print("No personas specified.", color="red")
+        print("No personas specified.")
         return 1
 
     pipeline = OpinionPipeline()
@@ -123,7 +123,7 @@ def build(
     :param no_agent: Disable agentica agents for extraction
     """
     if type not in ("individual", "group"):
-        cli2.print("type must be 'individual' or 'group'", color="red")
+        print("type must be 'individual' or 'group'")
         return 1
 
     search_queries = []
@@ -159,7 +159,7 @@ def list_indices_cmd(stats: str = ""):
     if stats:
         result = get_index_stats(stats)
         if "error" in result:
-            cli2.print(result["error"], color="red")
+            print(result["error"])
             return 1
         cli2.print(json.dumps(result, indent=2, default=str))
     else:
@@ -174,14 +174,14 @@ def clear(confirm: bool = False):
     :param confirm: Confirm deletion
     """
     if not confirm:
-        cli2.print("Use --confirm to delete all persona indices", color="yellow")
+        print("Use --confirm to delete all persona indices")
         return 1
 
     if os.path.exists(OPINIONS_DIR):
         shutil.rmtree(OPINIONS_DIR)
-        cli2.print(f"Cleared all indices from {OPINIONS_DIR}/", color="green")
+        print(f"Cleared all indices from {OPINIONS_DIR}/")
     else:
-        cli2.print("No indices to clear", color="yellow")
+        print("No indices to clear")
 
 
 main = cli.entry_point

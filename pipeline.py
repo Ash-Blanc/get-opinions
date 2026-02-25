@@ -190,7 +190,7 @@ class OpinionPipeline:
         return report
 
     async def _build_default_index(
-        self, identifier: str, use_agent: bool = True
+        self, identifier: str, use_agent: bool = False
     ) -> PersonaIndex | None:
         """Build a default index for a persona using discovered or default queries."""
         pid = normalize_id(identifier)
@@ -219,7 +219,7 @@ class OpinionPipeline:
                 persona_name=identifier,
                 persona_type="individual",
                 search_queries=search_queries,
-                max_opinions=100,
+                max_opinions=50,
                 use_embeddings=True,
                 use_agent=use_agent,
             )

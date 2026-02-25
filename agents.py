@@ -80,8 +80,8 @@ Output structured data with each opinion containing:
 - Brief context
 - Inferred topic tags""",
         model=CEREBRAS_MODELS["research"],
-        max_tokens=2000,  # More tokens for content extraction
-        reasoning_effort="medium",  # Better quality for extraction
+        max_tokens=4000,  # Enough tokens for content extraction
+        reasoning_effort="low",  # Fast extraction
     )
 
 
@@ -118,7 +118,14 @@ RULES:
 - Be concise and direct — no filler, no hedging
 - If opinions are one-sided, say so
 - If there aren't enough opinions for a section, skip it
-- Write like you're giving advice to a smart friend, not writing a paper""",
+- Write like you're giving advice to a smart friend, not writing a paper
+
+CRITICAL — ANTI-HALLUCINATION:
+- SILENTLY IGNORE any opinion that is NOT relevant to the user's actual question
+- Press releases, product pages, team rosters, job titles = NOT opinions. Drop them.
+- NEVER fabricate a coherent theme from unrelated content
+- If most opinions are irrelevant, say "Not enough relevant opinions found" in the TL;DR
+- Only synthesize opinions that DIRECTLY address the user's question""",
         model=CEREBRAS_MODELS["synthesis"],
         max_tokens=3000,
         reasoning_effort="high",

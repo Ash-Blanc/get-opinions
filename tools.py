@@ -502,16 +502,18 @@ async def discover_personas_for_topic(topic: str) -> list[dict]:
 
     print(f"  🔍 Discovering relevant voices via Parallel Search...")
 
-    # Search for people with direct experience on this topic
+    # Focus on ADVICE and STRATEGY, not participants or news coverage
     discovery_results = await parallel_search(
         queries=[
-            f"{topic} tips advice from experienced people",
-            f"{topic} first-person account success story",
-            f"{topic} expert discussion forum",
+            f"{topic} advice tips how to strategy",
+            f"{topic} lessons learned what worked what didn't",
+            f"{topic} reddit discussion personal experience",
         ],
-        objective=f"Find specific people who have direct experience with: {topic}. "
-                  f"Look for first-person accounts, advice posts, and discussions "
-                  f"from people who have actually done this — not just commentators.",
+        objective=f"Find blog posts, forum discussions, and personal accounts from "
+                  f"people sharing advice, tips, and strategies about: {topic}. "
+                  f"IGNORE: press releases, product pages, team rosters, university news, "
+                  f"job titles, and anything that is NOT someone sharing their personal "
+                  f"opinion or advice. Prioritize first-person 'how I did X' posts.",
         max_results=10,
         max_chars_per_result=3000,
     )
@@ -528,22 +530,22 @@ async def discover_personas_for_topic(topic: str) -> list[dict]:
         preview = clean_text("\n".join(excs))[:400] if excs else ""
         excerpts_for_llm.append(f"Title: {title}\nURL: {url}\nExcerpt: {preview}")
 
-    extract_prompt = f"""From these search results about "{topic}", identify 2-4 specific people or communities who have DIRECT experience with this topic.
+    extract_prompt = f"""From these search results about "{topic}", identify 2-3 people or communities who SHARE ADVICE about this topic.
 
 SEARCH RESULTS:
 {chr(10).join(excerpts_for_llm)}
 
 For each persona, return JSON:
 [
-  {{"name": "Person Name or Community", "search_queries": ["query1 about their experience", "query2 targeting their advice"]}}
+  {{"name": "Person Name or Community", "search_queries": ["query1 about their advice", "query2 targeting their tips"]}}
 ]
 
 RULES:
-- Pick people who have DONE the thing, not just commented on it
-- Include their real name or handle if visible
-- Make search queries specific to finding THEIR opinions and advice
-- If a Reddit/HN thread is rich with opinions, include that community as a persona
-- Prefer people with first-person experience over famous commentators
+- ONLY pick people who share ADVICE, TIPS, or PERSONAL EXPERIENCE
+- REJECT organizers, employees, product managers, press releases, team rosters
+- REJECT anyone whose content is just news coverage or announcements
+- If a Reddit/HN thread has rich discussion, include that subreddit as a persona
+- Make search queries target their OPINIONS and ADVICE, not their bio or team page
 - Return valid JSON array only, no explanation"""
 
     try:
@@ -559,6 +561,7 @@ RULES:
 
         personas = json.loads(content.strip())
         if isinstance(personas, list) and personas:
+            personas = personas[:3]  # Cap at 3 to keep builds fast
             for p in personas:
                 print(f"    Found: {p.get('name', '?')}")
             return personas
@@ -979,9 +982,11 @@ Write your analysis in this EXACT format:
 
 RULES:
 - Every point MUST be grounded in the provided opinions — do not invent
+- SILENTLY IGNORE opinions that are NOT relevant to the topic (press releases, product pages, job titles, team rosters)
+- NEVER fabricate a theme from unrelated content — if opinions don't address the topic, say so
 - Be concise and direct, not academic
 - Use short inline quotes ("like this") to show real voices
-- If opinions don't cover a section, say so honestly
+- If opinions don't cover a section, skip it
 - Write for someone who wants a quick, useful answer"""
 
     try:
