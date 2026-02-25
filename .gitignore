@@ -1,0 +1,51 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and environment
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# Generated data
+opinions/
+cache/
+reports/
+logs/
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Telemetry and tracking
+telemetry-id
+
+# Test files
+test_*.py
+*_test.py
+tests/
+
+# Old docs
+humint_*.md
+
+# Python version file (user-specific)
+.python-version
