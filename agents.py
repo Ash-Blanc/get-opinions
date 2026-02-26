@@ -7,15 +7,14 @@ from typing import Literal
 # Set up Cerebras API for high-performance inference
 set_default_agent_listener(FileOnlyListener)
 
-# Cerebras-backed models via OpenRouter (ultra-fast inference)
-# These are OpenRouter model slugs served by Cerebras hardware
+# Models via OpenRouter
 CEREBRAS_MODELS = {
-    "synthesis": "openai/gpt-oss-120b",           # 120B MoE, strong reasoning
-    "research": "meta-llama/llama-3.1-8b-instruct", # 8B, fast text processing
-    "curation": "openai/gpt-oss-120b",             # 120B MoE, strong reasoning
-    "persona_selector": "meta-llama/llama-3.1-8b-instruct",  # 8B, fast selection
-    "persona_simulation": "openai/gpt-oss-120b",   # 120B MoE, persona quality
-    "default": "openai/gpt-oss-120b",              # Fallback
+    "synthesis": "anthropic/claude-3-haiku",           # Synthesis + reasoning
+    "research": "meta-llama/llama-3.1-8b-instruct",   # Fast text processing
+    "curation": "anthropic/claude-3-haiku",             # Report curation
+    "persona_selector": "meta-llama/llama-3.1-8b-instruct",  # Fast selection
+    "persona_simulation": "anthropic/claude-3-haiku",   # Persona quality
+    "default": "anthropic/claude-3-haiku",              # Fallback
 }
 
 
@@ -122,9 +121,12 @@ RULES:
 
 CRITICAL — ANTI-HALLUCINATION:
 - SILENTLY IGNORE any opinion that is NOT relevant to the user's actual question
-- Press releases, product pages, team rosters, job titles = NOT opinions. Drop them.
+- Press releases, product pages, team rosters, job titles, bios = NOT opinions. Drop them.
 - NEVER fabricate a coherent theme from unrelated content
-- If most opinions are irrelevant, say "Not enough relevant opinions found" in the TL;DR
+- If fewer than 3 opinions DIRECTLY address the user's question, output ONLY:
+  ## TL;DR
+  Not enough relevant opinions found for this topic.
+  Then STOP. Do NOT pad with tangential content.
 - Only synthesize opinions that DIRECTLY address the user's question""",
         model=CEREBRAS_MODELS["synthesis"],
         max_tokens=3000,

@@ -112,6 +112,13 @@ Data stored locally:
 - `opinions/` — Persona indices with embeddings
 - `reports/` — Generated markdown reports
 
+## To-Do / Ideas (Contributing)
+
+We welcome contributions! Here are some ideas for future features and use cases:
+- **Full-Stack Next.js App**: A web interface for the `get-opinions` engine for VCs/investors due diligence.
+- **Web Sentiment Engine**: A broader tool to track and analyze the general sentiment of the web regarding a specific topic, product, or trend over time.
+- **Investor Due Diligence Workflows**: Specialized reports and workflows to evaluate founders, startups, and market sentiment.
+
 ## License
 
 MIT

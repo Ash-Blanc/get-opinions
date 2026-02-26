@@ -10,12 +10,59 @@ from exa_py import Exa
 
 load_dotenv()
 
-# Initialize services
-exa = Exa(api_key=os.environ.get("EXA_API_KEY", ""))
-PARALLEL_KEY = os.environ.get("PARALLEL_API_KEY", "")
-MISTRAL_KEY = os.environ.get("MISTRAL_API_KEY", "")
-OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-CEREBRAS_KEY = os.environ.get("CEREBRAS_API_KEY", "")
+
+# ── Round-robin API key rotation ─────────────────────────────
+class KeyRotator:
+    """Round-robin rotation across multiple API keys.
+    
+    Set comma-separated keys in .env:
+        OPENROUTER_API_KEY=sk-key1,sk-key2,sk-key3
+    Each call to .next() returns the next key in the rotation.
+    """
+    def __init__(self, env_var: str):
+        raw = os.environ.get(env_var, "")
+        self._keys = [k.strip() for k in raw.split(",") if k.strip()]
+        self._index = 0
+
+    def next(self) -> str:
+        """Get the next key in round-robin rotation."""
+        if not self._keys:
+            return ""
+        key = self._keys[self._index % len(self._keys)]
+        self._index += 1
+        return key
+
+    @property
+    def available(self) -> bool:
+        return len(self._keys) > 0
+
+    def __bool__(self) -> bool:
+        return self.available
+
+    def __repr__(self) -> str:
+        return f"KeyRotator({len(self._keys)} keys)"
+
+
+# Initialize services with round-robin support
+_exa_keys = KeyRotator("EXA_API_KEY")
+_parallel_keys = KeyRotator("PARALLEL_API_KEY")
+_mistral_keys = KeyRotator("MISTRAL_API_KEY")
+_openrouter_keys = KeyRotator("OPENROUTER_API_KEY")
+_cerebras_keys = KeyRotator("CEREBRAS_API_KEY")
+
+
+def get_exa() -> Exa:
+    """Get an Exa client with the next round-robin API key."""
+    key = _exa_keys.next()
+    if not key:
+        raise ValueError("EXA_API_KEY not set")
+    return Exa(api_key=key)
+
+# Backward-compat: single-key references for simple bool checks
+PARALLEL_KEY = os.environ.get("PARALLEL_API_KEY", "").split(",")[0].strip() if os.environ.get("PARALLEL_API_KEY") else ""
+MISTRAL_KEY = os.environ.get("MISTRAL_API_KEY", "").split(",")[0].strip() if os.environ.get("MISTRAL_API_KEY") else ""
+OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "").split(",")[0].strip() if os.environ.get("OPENROUTER_API_KEY") else ""
+CEREBRAS_KEY = os.environ.get("CEREBRAS_API_KEY", "").split(",")[0].strip() if os.environ.get("CEREBRAS_API_KEY") else ""
 EMBEDDINGS_MODEL = os.environ.get("EMBEDDINGS_MODEL", "mistral-embed")
 
 # Embedding cache
@@ -57,7 +104,7 @@ def generate_id(text: str) -> str:
 _JUNK_PATTERNS = re.compile(
     r"|".join([
         r"Section Title:.*",           # Parallel extract navigation headers
-        r"Content:\s*$",               # Empty content markers
+        r"^Content:\s*$",              # Empty content markers
         r"\[Open in app\].*",          # App store links
         r"Skip to main content.*",     # Skip-nav
         r"Open menu.*",               # Menu triggers
@@ -85,6 +132,14 @@ _JUNK_PATTERNS = re.compile(
         r"Follow Us On Social Media",
         r"Share\s*$",
         r"Sitemap\s*$",
+        r"Expand Navigation.*",
+        r"Collapse Navigation.*",
+        r"Open navigation.*",
+        r"Create Post.*",
+        r"Open settings menu.*",
+        r"Leer \d+ respuestas",
+        r"View Specs\s*$",
+        r"Latest Mobiles",
     ]),
     re.IGNORECASE | re.MULTILINE,
 )
@@ -166,7 +221,8 @@ async def get_embedding(text: str) -> list[float]:
 
 async def _get_embedding_cerebras(text: str) -> list[float]:
     """Get embedding via Cerebras API (fastest option)."""
-    if not CEREBRAS_KEY:
+    key = _cerebras_keys.next()
+    if not key:
         raise ValueError("CEREBRAS_API_KEY not set")
 
     # Use the most efficient model for embeddings
@@ -177,7 +233,7 @@ async def _get_embedding_cerebras(text: str) -> list[float]:
     req = urllib.request.Request(
         f"{HIGH_PERFORMANCE_MODELS['cerebras']['base_url']}/embeddings",
         headers={
-            "Authorization": f"Bearer {CEREBRAS_KEY}",
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/get-opinions",
             "X-Title": "get-opinions",
@@ -198,13 +254,14 @@ async def _get_embedding_cerebras(text: str) -> list[float]:
 
 async def _get_embedding_mistral(text: str) -> list[float]:
     """Get embedding via Mistral API."""
-    if not MISTRAL_KEY:
+    key = _mistral_keys.next()
+    if not key:
         raise ValueError("MISTRAL_API_KEY not set")
 
     req = urllib.request.Request(
         "https://api.mistral.ai/v1/embeddings",
         headers={
-            "Authorization": f"Bearer {MISTRAL_KEY}",
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
         },
         data=json.dumps(
@@ -221,13 +278,14 @@ async def _get_embedding_mistral(text: str) -> list[float]:
 
 async def _get_embedding_openrouter(text: str) -> list[float]:
     """Get embedding via OpenRouter (uses OpenAI models)."""
-    if not OPENROUTER_KEY:
+    key = _openrouter_keys.next()
+    if not key:
         raise ValueError("OPENROUTER_API_KEY not set")
 
     req = urllib.request.Request(
         "https://openrouter.ai/api/v1/embeddings",
         headers={
-            "Authorization": f"Bearer {OPENROUTER_KEY}",
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/get-opinions",
             "X-Title": "get-opinions",
@@ -274,7 +332,7 @@ async def get_high_performance_llm(
         parallel_models = {
             "zai-glm-4.7": "speed",  # Fast inference
             "llama3.1-8b": "speed",
-            "gpt-oss-120b": "quality",  # Deep analysis
+            "openai/gpt-4o-mini": "quality",  # Deep analysis
         }
         p_model = parallel_models.get(model, "speed")
         try:
@@ -287,7 +345,7 @@ async def get_high_performance_llm(
         openrouter_models = {
             "zai-glm-4.7": "anthropic/claude-3-haiku",
             "llama3.1-8b": "meta-llama/llama-3.1-8b-instruct",
-            "gpt-oss-120b": "openai/gpt-3-turbo",
+            "openai/gpt-4o-mini": "openai/gpt-4o-mini",
         }
         or_model = openrouter_models.get(model, "anthropic/claude-3-haiku")
         try:
@@ -305,13 +363,14 @@ async def _call_cerebras_llm(
     reasoning_effort: str = "medium",
 ) -> dict:
     """Call Cerebras LLM API."""
-    if not CEREBRAS_KEY:
+    key = _cerebras_keys.next()
+    if not key:
         raise ValueError("CEREBRAS_API_KEY not set")
 
     req = urllib.request.Request(
         f"{HIGH_PERFORMANCE_MODELS['cerebras']['base_url']}/chat/completions",
         headers={
-            "Authorization": f"Bearer {CEREBRAS_KEY}",
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/get-opinions",
             "X-Title": "get-opinions",
@@ -335,13 +394,14 @@ async def _call_openrouter_llm(
     prompt: str, model: str = "zai-glm-4.7", max_tokens: int = 4000
 ) -> dict:
     """Call OpenRouter LLM API."""
-    if not OPENROUTER_KEY:
+    key = _openrouter_keys.next()
+    if not key:
         raise ValueError("OPENROUTER_API_KEY not set")
 
     req = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",
         headers={
-            "Authorization": f"Bearer {OPENROUTER_KEY}",
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/get-opinions",
             "X-Title": "get-opinions",
@@ -364,13 +424,14 @@ async def _call_parallel_llm(
     prompt: str, model: str = "speed", max_tokens: int = 4000
 ) -> dict:
     """Call Parallel LLM API."""
-    if not PARALLEL_KEY:
+    key = _parallel_keys.next()
+    if not key:
         raise ValueError("PARALLEL_API_KEY not set")
 
     req = urllib.request.Request(
         "https://api.parallel.ai/chat/completions",
         headers={
-            "Authorization": f"Bearer {PARALLEL_KEY}",
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/get-opinions",
             "X-Title": "get-opinions",
@@ -409,9 +470,10 @@ async def parallel_search(
     Returns:
         List of {url, title, publish_date, excerpts[]}
     """
-    if not PARALLEL_KEY:
+    if not _parallel_keys:
         return []
 
+    key = _parallel_keys.next()
     body = {
         "search_queries": queries[:5],  # API limit
         "max_results": max_results,
@@ -423,7 +485,7 @@ async def parallel_search(
     req = urllib.request.Request(
         "https://api.parallel.ai/v1beta/search",
         headers={
-            "x-api-key": PARALLEL_KEY,
+            "x-api-key": key,
             "Content-Type": "application/json",
             "parallel-beta": "search-extract-2025-10-10",
         },
@@ -456,9 +518,10 @@ async def parallel_extract(
     Returns:
         List of {url, title, excerpts[]}
     """
-    if not PARALLEL_KEY:
+    if not _parallel_keys:
         return []
 
+    key = _parallel_keys.next()
     body = {
         "urls": urls[:10],  # Reasonable batch limit
         "excerpts": True,
@@ -469,7 +532,7 @@ async def parallel_extract(
     req = urllib.request.Request(
         "https://api.parallel.ai/v1beta/extract",
         headers={
-            "x-api-key": PARALLEL_KEY,
+            "x-api-key": key,
             "Content-Type": "application/json",
             "parallel-beta": "search-extract-2025-10-10",
         },
@@ -508,13 +571,17 @@ async def discover_personas_for_topic(topic: str) -> list[dict]:
             f"{topic} advice tips how to strategy",
             f"{topic} lessons learned what worked what didn't",
             f"{topic} reddit discussion personal experience",
+            f"{topic} expert opinion thought leader famous influential",
         ],
         objective=f"Find blog posts, forum discussions, and personal accounts from "
                   f"people sharing advice, tips, and strategies about: {topic}. "
+                  f"Prioritize WELL-KNOWN and INFLUENTIAL people in this domain — "
+                  f"thought leaders, industry experts, popular YouTubers, bestselling authors, "
+                  f"famous practitioners. Also include first-person 'how I did X' posts. "
                   f"IGNORE: press releases, product pages, team rosters, university news, "
                   f"job titles, and anything that is NOT someone sharing their personal "
-                  f"opinion or advice. Prioritize first-person 'how I did X' posts.",
-        max_results=10,
+                  f"opinion or advice.",
+        max_results=15,
         max_chars_per_result=3000,
     )
 
@@ -523,29 +590,32 @@ async def discover_personas_for_topic(topic: str) -> list[dict]:
 
     # Use LLM to extract persona names and generate targeted queries
     excerpts_for_llm = []
-    for r in discovery_results[:8]:
+    for r in discovery_results[:12]:
         title = r.get("title", "")
         url = r.get("url", "")
         excs = r.get("excerpts", [])
         preview = clean_text("\n".join(excs))[:400] if excs else ""
         excerpts_for_llm.append(f"Title: {title}\nURL: {url}\nExcerpt: {preview}")
 
-    extract_prompt = f"""From these search results about "{topic}", identify 2-3 people or communities who SHARE ADVICE about this topic.
+    extract_prompt = f"""From these search results about "{topic}", identify 3-5 people or communities who SHARE ADVICE about this topic.
 
 SEARCH RESULTS:
 {chr(10).join(excerpts_for_llm)}
 
 For each persona, return JSON:
 [
-  {{"name": "Person Name or Community", "search_queries": ["query1 about their advice", "query2 targeting their tips"]}}
+  {{"name": "Person Name or Community", "search_queries": ["query1 about their advice on {topic}", "query2 targeting their tips on {topic}"]}}
 ]
 
 RULES:
-- ONLY pick people who share ADVICE, TIPS, or PERSONAL EXPERIENCE
+- PRIORITIZE INFLUENTIAL and WELL-KNOWN voices: thought leaders, bestselling authors, famous practitioners, popular YouTubers/bloggers in this domain
+- Include at least 1-2 PROMINENT domain experts (e.g. Andrew Ng for AI, Paul Graham for startups)
+- Also include 1-2 communities with rich discussion (subreddits, HN threads, forums)
+- ONLY pick people who share ADVICE, TIPS, or PERSONAL EXPERIENCE about "{topic}"
 - REJECT organizers, employees, product managers, press releases, team rosters
 - REJECT anyone whose content is just news coverage or announcements
-- If a Reddit/HN thread has rich discussion, include that subreddit as a persona
-- Make search queries target their OPINIONS and ADVICE, not their bio or team page
+- Make search queries target their OPINIONS about "{topic}" SPECIFICALLY — not their bio or general content
+- Each query MUST include words from the topic: "{topic}"
 - Return valid JSON array only, no explanation"""
 
     try:
@@ -561,7 +631,7 @@ RULES:
 
         personas = json.loads(content.strip())
         if isinstance(personas, list) and personas:
-            personas = personas[:3]  # Cap at 3 to keep builds fast
+            personas = personas[:5]  # Cap at 5 for broader coverage
             for p in personas:
                 print(f"    Found: {p.get('name', '?')}")
             return personas
@@ -762,7 +832,7 @@ async def build_persona_index(
             print(f"  [{i}/{len(search_queries)}] Searching: {query}")
 
             try:
-                results = exa.search_and_contents(
+                results = get_exa().search_and_contents(
                     query=query,
                     num_results=15,
                     type="neural",
@@ -842,6 +912,11 @@ def extract_opinions(
         "open in app", "download the app", "member-only",
         "read more", "view specs", "promoted",
         "press enter or click", "latest mobiles",
+        "clickup", "learn more",
+        "section title:", "content:",
+        "expand user menu", "open navigation",
+        "create post", "open settings",
+        "anyone can view, post, and comment",
     ]
 
     for para in paragraphs:
@@ -910,7 +985,19 @@ async def search_opinions(
             else:
                 score = 0.0
 
-            if score > 0.3:
+            # Min-quality gate: skip short/metadata opinions
+            text = opinion.text.strip()
+            if len(text) < 80:
+                continue
+            text_lower = text.lower()
+            if any(marker in text_lower for marker in [
+                "section title:", "content:", "view specs",
+                "anyone can view", "create post", "open menu",
+                "members online", "expand user menu",
+            ]):
+                continue
+
+            if score > 0.5:
                 results.append(
                     {
                         "persona_id": pid,
@@ -982,8 +1069,12 @@ Write your analysis in this EXACT format:
 
 RULES:
 - Every point MUST be grounded in the provided opinions — do not invent
-- SILENTLY IGNORE opinions that are NOT relevant to the topic (press releases, product pages, job titles, team rosters)
+- SILENTLY IGNORE opinions that are NOT relevant to "{topic}" (press releases, product pages, job titles, team rosters, bios)
 - NEVER fabricate a theme from unrelated content — if opinions don't address the topic, say so
+- If fewer than 3 opinions are DIRECTLY relevant to "{topic}", output ONLY:
+  ## TL;DR
+  Not enough relevant opinions found for this topic. The retrieved content didn't contain direct perspectives on "{topic}".
+  Do NOT fabricate analysis from tangential content.
 - Be concise and direct, not academic
 - Use short inline quotes ("like this") to show real voices
 - If opinions don't cover a section, skip it

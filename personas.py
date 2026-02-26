@@ -141,4 +141,4 @@ def list_persona_indices() -> list[PersonaIndex]:
 
 
 def normalize_id(name: str) -> str:
-    return name.lower().replace(" ", "-").replace("_", "-").strip()
+    return name.lower().replace(" ", "-").replace("_", "-").replace("/", "-").strip()

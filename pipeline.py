@@ -142,7 +142,7 @@ class OpinionPipeline:
                 )
             elif build_missing:
                 print(f"  ⟐ Building index for: {identifier}")
-                index = await self._build_default_index(identifier)
+                index = await self._build_default_index(identifier, topic=topic)
                 if index:
                     persona_ids.append(pid)
                     persona_indices.append(index)
@@ -190,9 +190,13 @@ class OpinionPipeline:
         return report
 
     async def _build_default_index(
-        self, identifier: str, use_agent: bool = False
+        self, identifier: str, topic: str = "", use_agent: bool = False
     ) -> PersonaIndex | None:
-        """Build a default index for a persona using discovered or default queries."""
+        """Build a default index for a persona using discovered or default queries.
+        
+        CRITICAL: search queries MUST include the user's topic so we index
+        opinions about the topic, not generic persona content.
+        """
         pid = normalize_id(identifier)
 
         # Check if dynamic discovery provided targeted queries for this persona
@@ -204,14 +208,30 @@ class OpinionPipeline:
                     search_queries = p.get("search_queries", [])
                     break
 
-        # Fall back to generic queries if no discovery data
-        if not search_queries:
+        # Inject topic context into discovered queries if they don't already contain it
+        if search_queries and topic:
+            topic_lower = topic.lower()
             search_queries = [
-                f'"{identifier}" advice tips',
-                f'"{identifier}" opinion perspective',
-                f'"{identifier}" discussion insights',
-                f'{identifier} thoughts experience',
+                q if topic_lower[:20] in q.lower() else f"{q} {topic}"
+                for q in search_queries
             ]
+
+        # Fall back to topic-aware queries (not generic persona queries)
+        if not search_queries:
+            if topic:
+                search_queries = [
+                    f'{identifier} {topic} advice',
+                    f'{identifier} {topic} opinion',
+                    f'{identifier} {topic} discussion experience',
+                    f'"{identifier}" "{topic}"',
+                ]
+            else:
+                search_queries = [
+                    f'"{identifier}" advice tips',
+                    f'"{identifier}" opinion perspective',
+                    f'"{identifier}" discussion insights',
+                    f'{identifier} thoughts experience',
+                ]
 
         try:
             index = await build_persona_index(
