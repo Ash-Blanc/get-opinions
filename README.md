@@ -118,6 +118,10 @@ We welcome contributions! Here are some ideas for future features and use cases:
 - **Full-Stack Next.js App**: A web interface for the `get-opinions` engine for VCs/investors due diligence.
 - **Web Sentiment Engine**: A broader tool to track and analyze the general sentiment of the web regarding a specific topic, product, or trend over time.
 - **Investor Due Diligence Workflows**: Specialized reports and workflows to evaluate founders, startups, and market sentiment.
+- **Skip RAG / Direct Context Window**: Send full scraped discussion threads directly to models with massive context windows (like Amazon Nova Pro) for direct synthesis without vector search chunking/embedding.
+- **Multi-Modal Opinions**: Analyze and index video/audio reviews, YouTube transcripts, visual screenshots, and charts using vision models.
+- **Real-Time Opinion Streams**: Continuous monitoring and diff-based alerting (e.g., "Alert me when sentiment about this product changes on HN").
+- **Opinion Provenance & Trust Scoring**: Add credibility signals like account age, cross-referencing independence, and classifying opinions (e.g., 1st-hand experience vs. speculation).
 
 ## License
 
